@@ -1,17 +1,15 @@
 """
-History AI Tutor - Modern LangChain 2026
-С работающим RAG, памятью через RunnableWithMessageHistory
+History AI Tutor - Modern LangChain
 """
 
 import os
 import warnings
 from operator import itemgetter
 
-# Подавляем deprecation warnings (для чистоты вывода)
+# Подавляем лишние warnings
 from langchain_core._api import LangChainDeprecationWarning
 warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
 
-# Core imports
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
@@ -19,13 +17,11 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 
-# Standalone packages
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 
-# ========== 1. Конфигурация модели ==========
 def get_llm():
     """Возвращает LLM для генерации ответов"""
     return ChatOllama(model="qwen3:8b", temperature=0.5)
@@ -36,7 +32,6 @@ def get_embeddings():
     return OllamaEmbeddings(model="nomic-embed-text")
 
 
-# ========== 2. Загрузка документов ==========
 def load_documents(file_path: str = "data/history.txt"):
     """Загружает тексты и разбивает на чанки"""
     if not os.path.exists(file_path):
@@ -59,7 +54,6 @@ def load_documents(file_path: str = "data/history.txt"):
     return documents
 
 
-# ========== 3. Векторная БД ==========
 def create_vectorstore(documents, persist_directory="./chroma_db"):
     """Создает или загружает векторную БД"""
     embeddings = get_embeddings()
@@ -81,7 +75,7 @@ def create_vectorstore(documents, persist_directory="./chroma_db"):
     return vectorstore
 
 
-# ========== 4. Хранилище сессий для памяти ==========
+# Хранилище сессий для памяти
 store = {}
 
 def get_session_history(session_id: str) -> InMemoryChatMessageHistory:
@@ -91,7 +85,7 @@ def get_session_history(session_id: str) -> InMemoryChatMessageHistory:
     return store[session_id]
 
 
-# ========== 5. Создание цепочки с RAG и памятью (ГЛАВНОЕ) ==========
+# Создание цепочки с RAG и памятью
 def create_rag_chat_chain(retriever, llm):
     """
     Создает цепочку чата с RAG и памятью
@@ -148,7 +142,7 @@ def create_rag_chat_chain(retriever, llm):
     return chain_with_memory
 
 
-# ========== 6. Создание простого чата (без RAG, только память) ==========
+# Создание простого чата (без RAG, только память) 
 def create_simple_chat_chain(llm):
     """
     Альтернативная цепочка: только память, без RAG
@@ -172,7 +166,7 @@ def create_simple_chat_chain(llm):
     return chain_with_memory
 
 
-# ========== 7. Инициализация системы ==========
+# Инициализация системы 
 def init_rag_system(use_rag: bool = True, force_reload: bool = False):
     """
     Инициализирует RAG систему:
@@ -190,9 +184,9 @@ def init_rag_system(use_rag: bool = True, force_reload: bool = False):
     # Создаем папку data если нет
     os.makedirs("data", exist_ok=True)
     
-    # Проверяем наличие файла с данными
+    # Проверяем наличие файла с данными, если нет добавляем для теста
     if not os.path.exists("data/history.txt"):
-        print("Файл data/history.txt не найден. Создаю пример...")
+        print("Файл data/history.txt не найден. Создаем пример...")
         with open("data/history.txt", "w", encoding="utf-8") as f:
             f.write("""
 Великая Отечественная война началась 22 июня 1941 года.
@@ -230,18 +224,18 @@ def init_rag_system(use_rag: bool = True, force_reload: bool = False):
         print("Режим: только память (без RAG)")
         chat_chain = create_simple_chat_chain(llm)
     
-    print("Готово! Задавайте вопросы.")
+    print("Сервис готов к работе.")
     print("=" * 50)
     
     return chat_chain
 
 
-# ========== 8. Запуск диалога ==========
+# Запуск диалога 
 def run_dialog(chat_chain, session_id: str = "user_1"):
     """Запускает интерактивный диалог"""
     
     print("\nВопросы пишите после 'Вы: '")
-    print("Команды: /exit - выход, /new - новый диалог (очистить память)")
+    print("Команды: exit - для выхода, new - новый диалог (очистить память)")
     print("=" * 50)
     
     while True:
@@ -250,11 +244,11 @@ def run_dialog(chat_chain, session_id: str = "user_1"):
         if not user_input:
             continue
         
-        if user_input.lower() in ["/exit", "/quit", "exit", "quit", "выход"]:
+        if user_input.lower() in ["exit", "quit"]:
             print("До свидания!")
             break
         
-        if user_input.lower() in ["/new", "new"]:
+        if user_input.lower() in ["new"]:
             # Очищаем память для этой сессии
             if session_id in store:
                 store[session_id] = InMemoryChatMessageHistory()
@@ -269,10 +263,9 @@ def run_dialog(chat_chain, session_id: str = "user_1"):
             print(f"\nTutor: {response}")
         except Exception as e:
             print(f"\nОшибка: {e}")
-            print("Попробуйте переформулировать вопрос или запустите /new")
+            print("Попробуйте переформулировать вопрос или перезапустите через new")
 
 
-# ========== 9. Точка входа (если запускаем этот файл напрямую) ==========
 if __name__ == "__main__":
     # При запуске rag_agent.py напрямую
     chat_chain = init_rag_system(use_rag=True, force_reload=False)
