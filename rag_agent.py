@@ -24,7 +24,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 def get_llm():
     """Возвращает LLM для генерации ответов"""
-    return ChatOllama(model="qwen3:8b", temperature=0.5)
+    return ChatOllama(model="qwen3:8b", temperature=0.0)
 
 
 def get_embeddings():
