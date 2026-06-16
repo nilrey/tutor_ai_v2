@@ -8,30 +8,31 @@ Endpoints:
 - DELETE /session/{session_id} - очистить память сессии
 """
 
+import os
 import time
 import uuid
-from src.pydantic.models import * 
-from datetime import datetime
-from typing import Dict, Any, Optional
 from collections import defaultdict
+from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from langchain_core.documents import Document
 
 # Импорты из rag_agent (предполагаем, что rag_agent.py в той же папке)
-from rag_agent import (
-    init_rag_system, 
-    run_dialog, 
-    get_session_history, 
-    store
+from rag_agent import Chroma, get_embeddings, init_rag_system, store
+from src.pydantic.models import (
+    AddDocumentRequest,
+    HealthResponse,
+    QuestionRequest,
+    QuestionResponse,
+    SessionInfo,
+    StatResponse,
 )
 
 app = FastAPI(
     title="History AI Tutor API",
     description="RAG-агент по истории с LangChain и Ollama",
-    version="2.0.0"
+    version="2.0.0",
 )
 
 # CORS (для фронтенда)
@@ -49,9 +50,11 @@ app.add_middleware(
 request_stats = {
     "total_requests": 0,
     "response_times": [],  # список последних времен ответа (для среднего)
-    "last_requests": [],    # кортежи (timestamp, session_id)
+    "last_requests": [],  # кортежи (timestamp, session_id)
     "hourly_counts": defaultdict(int),  # счетчики по часам
-    "sessions_stats": defaultdict(lambda: {"count": 0, "first_seen": None, "last_seen": None})
+    "sessions_stats": defaultdict(
+        lambda: {"count": 0, "first_seen": None, "last_seen": None}
+    ),
 }
 
 # RAG система (инициализируется при старте)
@@ -59,22 +62,23 @@ rag_system = None
 
 # ========== 4. Инициализация и shutdown ==========
 
+
 @app.on_event("startup")
 async def startup_event():
     """Загружает RAG систему при старте сервера"""
     global rag_system
     print("Запуск History AI Tutor API...")
-    
+
     # Инициализируем RAG систему (один раз при старте)
     rag_system = init_rag_system(use_rag=True, force_reload=False)
-    
+
     # Сохраняем модель в конфиг для health check
-    from rag_agent import get_llm
     app.state.model_name = "qwen3:8b"
     app.state.rag_enabled = True
     app.state.vector_db_size = count_vector_db_documents()
-    
+
     print("API готов к работе")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -85,14 +89,15 @@ async def shutdown_event():
 
 # ========== 5. Вспомогательные функции ==========
 
+
 def count_vector_db_documents() -> int:
     """Возвращает количество документов в векторной БД"""
     try:
-        from rag_agent import Chroma, get_embeddings
-        import os
         if os.path.exists("./chroma_db"):
             embeddings = get_embeddings()
-            vstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
+            vstore = Chroma(
+                persist_directory="./chroma_db", embedding_function=embeddings
+            )
             # Приблизительное количество (Chroma не хранит count напрямую)
             return len(vstore.get()["ids"])
         return 0
@@ -100,24 +105,25 @@ def count_vector_db_documents() -> int:
         print(f"Ошибка подсчета документов: {e}")
         return -1
 
+
 def update_stats(session_id: str, response_time_ms: float):
     """Обновляет статистику запросов"""
     current_hour = datetime.now().strftime("%Y-%m-%d %H:00")
-    
+
     request_stats["total_requests"] += 1
     request_stats["response_times"].append(response_time_ms)
-    
+
     # Храним последние 1000 времен ответа
     if len(request_stats["response_times"]) > 1000:
         request_stats["response_times"] = request_stats["response_times"][-1000:]
-    
+
     # Последние запросы (для last_minute)
     request_stats["last_requests"].append((time.time(), session_id))
     request_stats["last_requests"] = request_stats["last_requests"][-100:]
-    
+
     # Почасовая статистика
     request_stats["hourly_counts"][current_hour] += 1
-    
+
     # Статистика по сессиям
     now = datetime.now().isoformat()
     stats = request_stats["sessions_stats"][session_id]
@@ -125,6 +131,7 @@ def update_stats(session_id: str, response_time_ms: float):
     if stats["first_seen"] is None:
         stats["first_seen"] = now
     stats["last_seen"] = now
+
 
 def get_last_minute_requests() -> int:
     """Возвращает количество запросов за последнюю минуту"""
@@ -135,50 +142,51 @@ def get_last_minute_requests() -> int:
 
 # ========== 6. Endpoints ==========
 
+
 @app.post("/ask", response_model=QuestionResponse)
 async def ask_question(request: QuestionRequest):
     """
     Задать вопрос боту по истории.
-    
+
     - **question**: текст вопроса (обязательно)
     - **session_id**: ID для сохранения контекста диалога (если не указан, создается новый)
     - **stream**: стриминг ответа (пока в разработке)
     """
     global rag_system
-    
+
     start_time = time.time()
-    
+
     # Генерируем session_id если не передан
     session_id = request.session_id or str(uuid.uuid4())
-    
+
     # Проверяем, что RAG система загружена
     if rag_system is None:
         raise HTTPException(status_code=503, detail="RAG система не инициализирована")
-    
+
     try:
         # Вызываем RAG цепочку
         response = rag_system.invoke(
             {"input": request.question},
-            config={"configurable": {"session_id": session_id}}
+            config={"configurable": {"session_id": session_id}},
         )
-        
+
         # Получаем ответ (в зависимости от формата rag_agent)
         if isinstance(response, dict):
             answer = response.get("output", response.get("answer", str(response)))
         else:
             answer = str(response)
-        
+
         # Подсчет времени
         response_time_ms = (time.time() - start_time) * 1000
-        
+
         # Обновляем статистику
         update_stats(session_id, response_time_ms)
-        
+
         # Сколько документов было найдено? (можно расширить)
         retrieved_docs_count = 0  # TODO: можно передавать из rag_agent
 
         processing_time_sec = time.time() - start_time
-        
+
         return QuestionResponse(
             session_id=session_id,
             question=request.question,
@@ -186,11 +194,13 @@ async def ask_question(request: QuestionRequest):
             timestamp=datetime.now().isoformat(),
             rag_used=app.state.rag_enabled,
             retrieved_docs_count=retrieved_docs_count,
-            processing_time=f"{round(processing_time_sec, 1)} сек" 
+            processing_time=f"{round(processing_time_sec, 1)} сек",
         )
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обработки запроса: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Ошибка обработки запроса: {str(e)}"
+        )
 
 
 @app.post("/add_document")
@@ -199,34 +209,38 @@ async def add_document(request: AddDocumentRequest):
     Добавить новый документ в векторную БД (без перезагрузки всего сервера)
     """
     global rag_system
-    
+
     try:
-        from rag_agent import get_embeddings, Chroma
-        
+        from rag_agent import Chroma, get_embeddings
+
         # Загружаем существующую БД
         embeddings = get_embeddings()
-        vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
-        
+        vectorstore = Chroma(
+            persist_directory="./chroma_db", embedding_function=embeddings
+        )
+
         # Создаем новый документ
         new_doc = Document(
             page_content=request.content,
-            metadata=request.metadata or {"source": "api", "added_at": datetime.now().isoformat()}
+            metadata=request.metadata
+            or {"source": "api", "added_at": datetime.now().isoformat()},
         )
-        
+
         # Добавляем в БД
         vectorstore.add_documents([new_doc])
         # vectorstore.persist()
-        
+
         # Пересоздаем RAG цепочку с обновленным ретривером
         from rag_agent import init_rag_system
+
         rag_system = init_rag_system(use_rag=True, force_reload=False)
-        
+
         return {
             "status": "ok",
             "message": "Документ добавлен",
-            "content_preview": request.content[:100]
+            "content_preview": request.content[:100],
         }
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -238,28 +252,29 @@ async def health_check():
     Используется для мониторинга (Kubernetes liveness/readiness probe).
     """
     global rag_system
-    
+
     # Подсчет активных сессий
     active_sessions = len(store)
-    
+
     # Проверка Ollama (опционально)
     ollama_healthy = True
     try:
         from langchain_ollama import ChatOllama
+
         test_llm = ChatOllama(model="qwen3:8b", temperature=0)
         test_llm.invoke("ping")  # проверка доступности
     except Exception:
         ollama_healthy = False
-    
+
     status = "healthy" if (rag_system is not None and ollama_healthy) else "degraded"
-    
+
     return HealthResponse(
         status=status,
         version="2.0.0",
         model=app.state.model_name,
         rag_enabled=app.state.rag_enabled,
         vector_db_size=count_vector_db_documents(),
-        active_sessions=active_sessions
+        active_sessions=active_sessions,
     )
 
 
@@ -275,22 +290,24 @@ async def get_statistics():
     """
     # Среднее время ответа
     if request_stats["response_times"]:
-        avg_time = sum(request_stats["response_times"]) / len(request_stats["response_times"])
+        avg_time = sum(request_stats["response_times"]) / len(
+            request_stats["response_times"]
+        )
     else:
         avg_time = 0.0
-    
+
     # Преобразуем hourly_counts в обычный dict
     hourly_dict = dict(request_stats["hourly_counts"])
-    
+
     # Статистика по сессиям
     sessions_info = {}
     for sid, stats in request_stats["sessions_stats"].items():
         sessions_info[sid] = {
             "requests": stats["count"],
             "first_seen": stats["first_seen"],
-            "last_seen": stats["last_seen"]
+            "last_seen": stats["last_seen"],
         }
-    
+
     return StatResponse(
         total_requests=request_stats["total_requests"],
         avg_response_time_ms=avg_time,
@@ -298,8 +315,8 @@ async def get_statistics():
         requests_by_hour=hourly_dict,
         sessions_stats={
             "total_sessions": len(request_stats["sessions_stats"]),
-            "sessions_detail": sessions_info
-        }
+            "sessions_detail": sessions_info,
+        },
     )
 
 
@@ -310,13 +327,17 @@ async def list_sessions():
     """
     sessions = []
     for session_id, history in store.items():
-        sessions.append(SessionInfo(
-            session_id=session_id,
-            message_count=len(history.messages) if hasattr(history, 'messages') else 0,
-            created_at="unknown",  # можно расширить
-            last_active=datetime.now().isoformat()  # приблизительно
-        ))
-    
+        sessions.append(
+            SessionInfo(
+                session_id=session_id,
+                message_count=len(history.messages)
+                if hasattr(history, "messages")
+                else 0,
+                created_at="unknown",  # можно расширить
+                last_active=datetime.now().isoformat(),  # приблизительно
+            )
+        )
+
     return {"sessions": [s.dict() for s in sessions], "total": len(sessions)}
 
 
@@ -327,6 +348,7 @@ async def clear_session(session_id: str):
     """
     if session_id in store:
         from rag_agent import InMemoryChatMessageHistory
+
         store[session_id] = InMemoryChatMessageHistory()
         return {"status": "ok", "message": f"Сессия {session_id} очищена"}
     else:
@@ -340,9 +362,10 @@ async def reload_vector_db():
     Требует прав администратора (можно защитить токеном).
     """
     global rag_system
-    
+
     try:
         from rag_agent import init_rag_system
+
         # Переинициализируем с force_reload=True
         rag_system = init_rag_system(use_rag=True, force_reload=True)
         app.state.vector_db_size = count_vector_db_documents()
@@ -354,10 +377,5 @@ async def reload_vector_db():
 # Запуск напрямую
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")

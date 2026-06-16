@@ -1,39 +1,72 @@
 """
 обработка входящего PDF, этап 1 - "выгрузка сырых данных"
 """
+
+import argparse
 import sys
 from pathlib import Path
-import argparse
+
+import pdfplumber
 
 
-def load_pdf():
-    return True
+def load_pdf(path) -> str:
+    parts = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            try:
+                text = page.extract_text()
+                if text:
+                    parts.append(text)
+
+            except Exception as e:
+                print(f"Ошибка на странице {page.page_number}: {e}")
+                continue
+
+    return "\n".join(parts)
 
 
-def save_txt():
-    return True
+def count_pages(path) -> int:
+    pages_counter = 0
+    with pdfplumber.open(path) as pdf:
+        pages_counter = len(pdf.pages)
+    return pages_counter
 
-def get_arg(arg_nmb):
-    if len(sys.argv) > arg_nmb:
-        print(env_name)
-        value = sys.argv[arg_nmb]
 
-    # if value is None:
-    #     value = DEFAULT_PATH
-    #     print(f'Warn: os.getenv({env_name}) not defined, sys.argv.{arg_nmb} not defined.')
-    return value
+def save_txt(pdf_path: Path, content) -> bool:
+    try:
+        txt_dir = Path("raw")
+        txt_dir.mkdir(exist_ok=True)
+        txt_name = f"raw_{pdf_path.stem}.txt"
+        txt_path = txt_dir / txt_name
+        with txt_path.open("w", encoding="utf-8") as txt:
+            txt.write(content)
+        return True
+
+    except Exception as e:
+        print(f"Ошибка записи в файл {txt_path}: {e}")
+        return False
+
 
 if __name__ == "__main__":
-    print((sys.argv))
-    parser = argparse.ArgumentParser( )
-    parser.add_argument('--input' )
-    parser.add_argument('--PDF_PATH'.lower() )
-    parser.add_argument('--PDF_NAME' )
+    #
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pdf_path", required=True)
     args = parser.parse_args()
-    print("Input:", args.input)
-    print("--pdf_path:", args.pdf_path)
 
-    # pdf_path = get_arg('PDF_PATH', 1)
-    # pdf_name = get_arg('PDF_NAME', 2)
-    # pdf_file = Path(pdf_path).joinpath(pdf_name)
-    # print(pdf_file)
+    print("Путь к файлу:", args.pdf_path)
+
+    pdf_path = Path(args.pdf_path)
+
+    if not pdf_path.exists():
+        print(f"Файл не существует. '{pdf_path}'")
+        sys.exit(1)
+
+    pages_counter = count_pages(pdf_path)
+    print("Количество страниц: " + str(pages_counter))
+
+    if pages_counter > 0:
+        content = load_pdf(pdf_path)
+        if save_txt(pdf_path, content):
+            print("Текст успешно сохранен.")
+
+    print("Скрипт завершен.")
